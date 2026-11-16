@@ -1,0 +1,10 @@
+[kill] copy 进程被 SIGKILL，rc=-9，期间业务写操作 22168 次
+[kill] 被杀进程最后日志: 
+[copy] 追赶第 1 轮：事件 44922 条，补缺 0 行，清多 0 行，错误 0 行
+[copy] 迁移 1 到达 READY：追赶轮次=2，当前行级错误=0
+[status] migration_id=1 state=READY schema=shmig_1
+  源行数=21782 影子行数=21782 行级错误=0 流水最大seq=44922 已应用seq=44922 复制水位row_id=23167
+  结论: 可 cutover
+[kill] 恢复后源/影子 21782 行逐行一致，水位与流水位点：[('applied_seq', '44922'), ('copy_watermark', '23167'), ('state', 'READY')]
+[cutover] 迁移 1 已提交：public.fact 现在是新结构，旧物理表保留为 public.fact__old_1，视图已绑定新表。
+[kill] SIGKILL 恢复演练全部通过。

@@ -1,0 +1,31 @@
+{
+  "source": {"schema": "public", "table": "fact"},
+  "control_schema": "shadow_mig",
+  "amount": {
+    "decimal_sep": ".",
+    "thousands_sep": ",",
+    "scale": 2,
+    "rounding": "half_even",
+    "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+    "nullable": true,
+    "min": "-999999999999.99",
+    "max": "999999999999.99"
+  },
+  "location": {"separator": "/", "nullable": true},
+  "target": {
+    "amount_type": "numeric(14,2)",
+    "amount_not_null": false,
+    "region_not_null": false,
+    "site_not_null": false,
+    "unique_keys": [["region", "site"]]
+  },
+  "managed_views": [
+    {
+      "schema": "public",
+      "name": "v_fact_ro",
+      "definition_sql": "CREATE VIEW public.v_fact_ro AS SELECT row_id, amount, region, site, note FROM public.fact"
+    }
+  ],
+  "cutover": {"lock_timeout_ms": 2000},
+  "copy": {"batch_size": 3}
+}

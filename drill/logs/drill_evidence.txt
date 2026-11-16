@@ -1,0 +1,192 @@
+==============================================================================
+演练 A：门禁、复制中崩溃恢复、错误清除、唯一冲突阻塞 cutover、修复后切换
+==============================================================================
+$ MIGRATE_DSN=...  python -I migrate.py plan --config config.json  (rc=2)
+    [plan] 源表 public.fact 依赖盘点:
+      - 受管只读视图 public.v_fact_ro
+      - 列: ['row_id', 'amount_text', 'location_text', 'note']
+      - 受管视图切换后重建: public.v_fact_ro
+    [plan] 拒绝：存在不支持的依赖/结构：
+      ! 表上存在触发器: bad_trg
+    E ERROR: plan 未通过，start 前必须先处理上述问题
+[PASS] 命令 rc=2: plan 
+[PASS] plan 拒绝触发器依赖 
+$ MIGRATE_DSN=...  python -I migrate.py plan --config config.json  (rc=0)
+    [plan] 源表 public.fact 依赖盘点:
+      - 受管只读视图 public.v_fact_ro
+      - 列: ['row_id', 'amount_text', 'location_text', 'note']
+      - 受管视图切换后重建: public.v_fact_ro
+    [plan] 通过：该表属于受管普通表子集，可执行 start。
+[PASS] 命令 rc=0: plan 
+$ MIGRATE_DSN=...  python -I migrate.py start --config config.json  (rc=0)
+    [plan] 源表 public.fact 依赖盘点:
+      - 受管只读视图 public.v_fact_ro
+      - 列: ['row_id', 'amount_text', 'location_text', 'note']
+      - 受管视图切换后重建: public.v_fact_ro
+    [plan] 通过：该表属于受管普通表子集，可执行 start。
+    [start] 已建立迁移身份 id=1 schema=shmig_1；触发器已安装（本数据库内捕获），存量扫描待 copy。
+[PASS] 命令 rc=0: start 
+$ MIGRATE_DSN=...  python -I migrate.py start --config config.json  (rc=0)
+    [start] 已有迁移身份 id=1 schema=shmig_1 state=COPYING，直接返回，不重复创建捕获器。
+[PASS] 命令 rc=0: start 
+[PASS] 只有一条迁移登记 [(1, 'COPYING', 'shmig_1')]
+[PASS] 源表已装捕获触发器 [('trg_shadow_capture',)]
+$ MIGRATE_DSN=... MIG_MAX_BATCHES=2 python -I migrate.py copy --config config.json  (rc=0)
+    [copy] MIG_MAX_BATCHES=2 到达，演练用提前退出（模拟崩溃点）。
+[PASS] 命令 rc=0: copy 
+[PASS] 崩溃点水位已持久化(row_id=6) 6
+[PASS] 已提交批次行已落影子 6
+$ MIGRATE_DSN=...  python -I migrate.py copy --config config.json  (rc=0)
+    [copy] 迁移 1 到达 READY：追赶轮次=1，当前行级错误=4
+[PASS] 命令 rc=0: copy 
+[PASS] 重开后到达 READY READY
+$ MIGRATE_DSN=...  python -I migrate.py status --config config.json  (rc=0)
+    [status] migration_id=1 state=READY schema=shmig_1
+      源行数=15 影子行数=12 行级错误=4 流水最大seq=0 已应用seq=0 复制水位row_id=15
+      错误 row_id=8 at_seq=None: 目标唯一键 ['region', 'site'] 冲突: row_id=9 与 [8]
+        源状态={"note": "will-conflict-1", "row_id": 8, "amount_text": "8.00", "location_text": "east/site-g"}
+      错误 row_id=9 at_seq=None: 目标唯一键 ['region', 'site'] 冲突: row_id=9 与 [8]
+        源状态={"note": "will-conflict-2", "row_id": 9, "amount_text": "9.00", "location_text": "east/site-g"}
+      错误 row_id=10 at_seq=None: 金额文本 'bad-amount' 不符合声明格式 ^-?[0-9]+(\.[0-9]+)?$
+        源状态={"note": "bad amount then fixed", "row_id": 10, "amount_text": "bad-amount", "location_text": "south/site-h"}
+      错误 row_id=11 at_seq=None: location_text 'bad-loc-onlyone' 按分隔符 '/' 拆分得到 1 段，必须恰好为 region/site 两段（需字面分隔符请写 \| 形式）
+        源状态={"note": "bad location then fixed", "row_id": 11, "amount_text": "11.00", "location_text": "bad-loc-onlyone"}
+      结论: 暂不可切换（见上）
+[PASS] 命令 rc=0: status 
+[PASS] status 列出坏行 row_id=10 
+[PASS] status 给出原因 
+[PASS] status 给出源状态 JSON 
+[PASS] status 列出坏行 row_id=11 
+[PASS] status 报告唯一冲突 
+$ MIGRATE_DSN=...  python -I migrate.py status --config config.json  (rc=0)
+    [status] migration_id=1 state=READY schema=shmig_1
+      源行数=14 影子行数=14 行级错误=0 流水最大seq=3 已应用seq=3 复制水位row_id=15
+      结论: 可 cutover
+[PASS] 命令 rc=0: status 
+[PASS] 修复/删除后过期错误清零 remaining=0
+$ MIGRATE_DSN=...  python -I migrate.py status --config config.json  (rc=0)
+    [status] migration_id=1 state=READY schema=shmig_1
+      源行数=15 影子行数=14 行级错误=2 流水最大seq=5 已应用seq=5 复制水位row_id=15
+      错误 row_id=8 at_seq=None: 目标唯一键 ['region', 'site'] 冲突: row_id=20 与 [8]
+        源状态={"note": "will-conflict-1", "row_id": 8, "amount_text": "8.00", "location_text": "east/site-g"}
+      错误 row_id=20 at_seq=None: 目标唯一键 ['region', 'site'] 冲突: row_id=20 与 [8]
+        源状态={"note": "new conflict", "row_id": 20, "amount_text": "20.00", "location_text": "east/site-g"}
+      结论: 暂不可切换（见上）
+[PASS] 命令 rc=0: status 
+$ MIGRATE_DSN=...  python -I migrate.py cutover --config config.json  (rc=2)
+    E ERROR: 拒绝切换：行级错误 2 行，唯一冲突 0 组。修正源数据后可重试 cutover，无需重做全表复制。
+[PASS] 命令 rc=2: cutover 
+[PASS] cutover 因冲突被拒绝 
+[PASS] 旧表仍为旧结构且可写 ['row_id', 'amount_text', 'location_text', 'note']
+$ MIGRATE_DSN=...  python -I migrate.py status --config config.json  (rc=0)
+    [status] migration_id=1 state=READY schema=shmig_1
+      源行数=15 影子行数=15 行级错误=0 流水最大seq=10 已应用seq=10 复制水位row_id=15
+      结论: 可 cutover
+[PASS] 命令 rc=0: status 
+[PASS] 冲突修复后错误清零 
+$ MIGRATE_DSN=...  python -I migrate.py cutover --config config.json  (rc=2)
+    [cutover] 等锁超时（上限 2000ms），已回滚：旧表保持可写，迁移保持 READY，可稍后重试。
+    E ERROR: lock_timeout
+[PASS] 命令 rc=2: cutover 
+[PASS] 等锁超时时回滚且迁移仍 READY 
+[PASS] 超时后状态仍 READY READY
+[PASS] 超时后旧表名仍是旧表 
+$ MIGRATE_DSN=...  python -I migrate.py cutover --config config.json  (rc=0)
+    [cutover] 迁移 1 已提交：public.fact 现在是新结构，旧物理表保留为 public.fact__old_1，视图已绑定新表。
+[PASS] 命令 rc=0: cutover 
+[PASS] 连接1 看到新列结构 
+[PASS] 连接2 看到新列结构 
+[PASS] 登记为 DONE DONE
+[PASS] 新表上没有捕获器 
+[PASS] 旧物理表保留 public.fact__old_1
+[PASS] 视图绑定新物理表 ('fact', ' SELECT fact.row_id,\n    fact.amount,\n    fact.region,\n    fact.site,\n    fact.note\n   FROM fact;')
+[PASS] 视图定义为新列  SELECT fact.row_id,
+    fact.amount,
+    fact.region,
+    fact.site,
+    fact.note
+   FROM fact;
+[PASS] 切换后新写入走新列 (Decimal('42.50'), 'newr', 'news')
+$ python -I independent_check.py --source public.fact__old_1
+    [check] 源快照 15 行，独立转换成功 15 行，源内坏行 0 行，目标 15 行
+    [check] 结论: 通过，目标与独立重算的源快照逐行一致。
+[PASS] 独立逐行核对通过 
+[PASS] 手写预期 row_id=1 (Decimal('100.00'), 'east', 'site-a')
+[PASS] 手写预期 row_id=2 (Decimal('1234.50'), 'east', 'site-b')
+[PASS] 手写预期 row_id=4 (Decimal('12.34'), 'west', 'site-d')
+[PASS] 手写预期 row_id=5 (Decimal('12.36'), 'north', 'site-e')
+[PASS] 手写预期 row_id=6 (None, None, None)
+[PASS] 手写预期 row_id=7 (Decimal('7.00'), 'east/escape', 'site-f')
+[PASS] 视图查询数值为手写预期 (Decimal('12.34'), 'west', 'site-d')
+==============================================================================
+演练 B：交错裁定（删前插、旧值后更新、复制前删除、回滚、负序/小 row_id）
+==============================================================================
+$ MIGRATE_DSN=...  python -I migrate.py start --config config.json  (rc=0)
+    [plan] 源表 public.fact 依赖盘点:
+      - 受管只读视图 public.v_fact_ro
+      - 列: ['row_id', 'amount_text', 'location_text', 'note']
+      - 受管视图切换后重建: public.v_fact_ro
+    [plan] 通过：该表属于受管普通表子集，可执行 start。
+    [start] 已建立迁移身份 id=1 schema=shmig_1；触发器已安装（本数据库内捕获），存量扫描待 copy。
+[PASS] 命令 rc=0: start 
+$ MIGRATE_DSN=... MIG_MAX_BATCHES=1 python -I migrate.py copy --config config.json  (rc=0)
+    [copy] MIG_MAX_BATCHES=1 到达，演练用提前退出（模拟崩溃点）。
+[PASS] 命令 rc=0: copy 
+[PASS] 复制先读到旧 A(100.00) 100.00
+$ MIGRATE_DSN=...  python -I migrate.py copy --config config.json  (rc=0)
+    [copy] 追赶第 1 轮：事件 7 条，补缺 0 行，清多 0 行，错误 0 行
+    [copy] 迁移 1 到达 READY：追赶轮次=2，当前行级错误=0
+[PASS] 命令 rc=0: copy 
+[PASS] B 轮到达 READY READY
+[PASS] 交错裁定 row_id=1 (Decimal('111.11'), 'east', 'site-a')
+[PASS] 交错裁定 row_id=3 (Decimal('3.33'), 'west', 'new-c')
+[PASS] row_id=12 已删除不入影子 
+[PASS] 源表 row_id=12 确实不存在 
+[PASS] 交错裁定 row_id=13 (Decimal('13.50'), 'south', 're-j')
+[PASS] 交错裁定 row_id=14 (Decimal('14.00'), 'south', 'site-k')
+[PASS] 交错裁定 row_id=-5 (Decimal('-5.00'), 'neg', 'r1')
+[PASS] 交错裁定 row_id=0 (Decimal('0.00'), 'zero', 'r0')
+[PASS] 回滚更新无幽灵流水 
+[PASS] 源/影子行数一致（无错误时） 14 vs 14
+$ MIGRATE_DSN=...  python -I migrate.py cutover --config config.json  (rc=0)
+    [cutover] 迁移 1 已提交：public.fact 现在是新结构，旧物理表保留为 public.fact__old_1，视图已绑定新表。
+[PASS] 命令 rc=0: cutover 
+$ python -I independent_check.py --source public.fact__old_1
+    [check] 源快照 14 行，独立转换成功 14 行，源内坏行 0 行，目标 14 行
+    [check] 结论: 通过，目标与独立重算的源快照逐行一致。
+[PASS] B 轮独立逐行核对通过 
+[PASS] B 轮视图仍绑定新表 
+==============================================================================
+演练 C：abort 只清理迁移对象，业务表不受影响
+==============================================================================
+$ MIGRATE_DSN=...  python -I migrate.py start --config config.json  (rc=0)
+    [plan] 源表 public.fact 依赖盘点:
+      - 受管只读视图 public.v_fact_ro
+      - 列: ['row_id', 'amount_text', 'location_text', 'note']
+      - 受管视图切换后重建: public.v_fact_ro
+    [plan] 通过：该表属于受管普通表子集，可执行 start。
+    [start] 已建立迁移身份 id=1 schema=shmig_1；触发器已安装（本数据库内捕获），存量扫描待 copy。
+[PASS] 命令 rc=0: start 
+$ MIGRATE_DSN=... MIG_MAX_BATCHES=1 python -I migrate.py copy --config config.json  (rc=0)
+    [copy] MIG_MAX_BATCHES=1 到达，演练用提前退出（模拟崩溃点）。
+[PASS] 命令 rc=0: copy 
+$ MIGRATE_DSN=...  python -I migrate.py abort --config config.json  (rc=0)
+    [abort] 迁移 1 的影子表/流水/捕获器已清除，源业务表与数据原样保留，登记置 ABORTED。
+[PASS] 命令 rc=0: abort 
+[PASS] 迁移 schema 已删除 
+[PASS] 源表触发器已摘除 
+[PASS] 源表数据完好(15行) 15
+[PASS] abort 后旧表可正常写入 
+$ MIGRATE_DSN=...  python -I migrate.py start --config config.json  (rc=0)
+    [plan] 源表 public.fact 依赖盘点:
+      - 受管只读视图 public.v_fact_ro
+      - 列: ['row_id', 'amount_text', 'location_text', 'note']
+      - 受管视图切换后重建: public.v_fact_ro
+    [plan] 通过：该表属于受管普通表子集，可执行 start。
+    [start] 已建立迁移身份 id=2 schema=shmig_2；触发器已安装（本数据库内捕获），存量扫描待 copy。
+[PASS] 命令 rc=0: start 
+$ MIGRATE_DSN=...  python -I migrate.py abort --config config.json  (rc=0)
+    [abort] 迁移 2 的影子表/流水/捕获器已清除，源业务表与数据原样保留，登记置 ABORTED。
+[PASS] 命令 rc=0: abort 
+==============================================================================
+演练汇总：74 PASS / 0 FAIL，共 74 项断言
